@@ -21,7 +21,7 @@ class Model(object):
       self._build_model()
     if restore:
       path = tf.train.latest_checkpoint(restore)
-      used_vars = [x for x in tf.global_variables() if x.name.startswith('model')]
+      used_vars = [x for x in tf.global_variables() if x.name.startswith('model') and 'SAP' not in x.name]
       #other_dict = {x.name[6:-2]:x for x in tf.global_variables() if x.name.startswith('model')}
       saver = tf.train.Saver(var_list=used_vars)
       saver.restore(sess, path)

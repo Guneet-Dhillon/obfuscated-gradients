@@ -1,43 +1,36 @@
 import tensorflow as tf
+import tensorflow_probability as tfp
 import numpy as np
 
 from cifar_model import Model
 
 class SAPModel(Model):
-    image_size = 32
-    num_labels = 10
-    num_channels = 3
 
-    def __init__(self,  *args, **kwargs):
-        if 'fix' in kwargs:
-            self.fix_randomness = kwargs['fix'] == True
-            del kwargs['fix']
-        else:
-            self.fix_randomness = False
-        super().__init__(*args, **kwargs)
+    def init_mask(self, x_input, sess):
+        var = [x for x in tf.global_variables() if x.name.startswith('model') and 'SAP' in x.name]
+        tf.variables_initializer(var).run(session=sess, feed_dict={'model/input/x_input_model:0': x_input})
 
-    def _conv(self, name, x, filter_size, in_filters, out_filters, strides):
-        r = super()._conv(name, x, filter_size, in_filters, out_filters, strides)
-        r = tf.check_numerics(r, "okay")
-        p = tf.abs(r)/tf.reduce_sum(tf.abs(r), axis=(1,2,3), keep_dims=True)
-        w,h,c = p.get_shape().as_list()[1:]
-        N = w*h*c*2
-        if self.fix_randomness:
-            p_keep = 1-tf.exp(-N*p)
-            rand = tf.constant(np.random.uniform(size=(p_keep.shape[0],w,h,c)),
-                               dtype=tf.float32)
-        else:
-            p_keep = 1-tf.exp(-N*p)
-            rand = tf.random_uniform(tf.shape(p_keep))
-        keep = rand<p_keep
-        r = tf.cast(keep, tf.float32)*r/(p_keep+1e-8)
-        r = tf.check_numerics(r, "OH NO")
-        return r
+    def _relu(self, x, leakiness=0.0):
+        x = super(SAPModel, self)._relu(x, leakiness)
 
-    def _build_model(self, x_input = None):
-        if x_input == None:
-            x_input = tf.placeholder(tf.float32, (None, 32, 32, 3))
-        return super()._build_model(x_input)
+        x = tf.cast(x, tf.float64)
+        n, w, h, c = x.get_shape().as_list()
+        N = w * h * c
+        x = tf.reshape(x, [-1, N])
+        S = N
 
-    def predict(self, x):
-        return self.__call__(x)
+        zero = tf.zeros_like(x)
+        p = tf.abs(x) / tf.reduce_sum(tf.abs(x), axis=1, keepdims=True)
+        scale = 1.0 - tf.pow(1.0 - p, S)
+
+        ind = tf.transpose(tfp.distributions.Categorical(probs=p, allow_nan_stats=False).sample(S))
+        keep = tf.Variable(tf.zeros_like(x, dtype=tf.int32), validate_shape=False, name='SAP')
+        keep = tf.batch_scatter_update(keep, ind, tf.ones_like(ind, dtype=tf.int32), use_locking=False)
+        keep = keep > 0
+
+        x = tf.where(keep, x / scale, zero)
+        x = tf.reshape(x, [-1, w, h, c])
+        x = tf.cast(x, tf.float32)
+
+        return x
+
